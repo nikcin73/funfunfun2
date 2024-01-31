@@ -30,7 +30,7 @@ uint32 acquireentry(){
         if(!swapdisk.valid[entry]) break;
         entry=(entry+1)%NUM_ENTRY;
     }while(entry!=swapdisk.start);
-    if(entry==swapdisk.start) panic("swapdisk: no more free entries");
+    if(entry==swapdisk.start && swapdisk.valid[entry]) panic("swapdisk: no more free entries");
     swapdisk.valid[entry]=1;
     swapdisk.start=(entry+1)%NUM_ENTRY;
     release(&swapdisk.lock);
@@ -55,3 +55,4 @@ void swapin(void* addr,uint32 entry){
         read_block(entry*4+i,(uchar*)((uint64)addr+i*DISKBLOCK),0);
     }
 }
+

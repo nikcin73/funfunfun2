@@ -10,35 +10,48 @@
 #include "defs.h"
 
 
-
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
-                   // defined by kernel.ld.
+// defined by kernel.ld.
 
 struct run {
-  struct run *next;
+    struct run *next;
 };
 
 struct {
-  struct spinlock lock;
-  struct run *freelist;
+    struct spinlock lock;
+    struct run *freelist;
 } kmem;
 
-void
-kinit()
-{
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+void*
+F2PA(int frame){
+    return (void*)((uint64)end+((uint64)frame<<12));
+}
+
+int
+PA2F(void* pa){
+    return (int)(((uint64)pa-(uint64)end)>>12);
 }
 
 void
-freerange(void *pa_start, void *pa_end)
-{
-  char *p;
-  p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+setdiskentry(pte_t *pte,uint32 entry){
+    *pte&=~ENTRYMASK;
+    *pte|=(entry<<10)|PTE_DISK;
+}
+
+void
+kinit() {
+    initlock(&kmem.lock, "kmem");
+    freerange(end, (void *) PHYSTOP);
+}
+
+void
+freerange(void *pa_start, void *pa_end) {
+    char *p;
+    p = (char *) PGROUNDUP((uint64) pa_start);
+    for (; p + PGSIZE <= (char *) pa_end; p += PGSIZE)
+        kfree(p);
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -46,39 +59,50 @@ freerange(void *pa_start, void *pa_end)
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
 void
-kfree(void *pa)
-{
-  struct run *r;
+kfree(void *pa) {
+    struct run *r;
 
-  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
-    panic("kfree");
+    if (((uint64) pa % PGSIZE) != 0 || (char *) pa < end || (uint64) pa >= PHYSTOP)
+        panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
 
-  r = (struct run*)pa;
+    r = (struct run *) pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+    acquire(&kmem.lock);
+    setframestate(PA2F(pa),'e');
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    release(&kmem.lock);
 }
+
+
 
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.
 void *
-kalloc(void)
-{
-  struct run *r;
+kalloc(void) {
+    struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
-
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
-  return (void*)r;
+    acquire(&kmem.lock);
+    r = kmem.freelist;
+    if (r) {
+        kmem.freelist = r->next;
+    } else {
+        int victim=getvictim();
+        if(victim==-1) panic("kalloc: no idle/user pages in memory");
+        uint32 entry=acquireentry();
+        if(entry==-1) panic("kalloc: no free disk entries");
+        setframestate(victim,'k');
+        swapout((void*)F2PA(victim),entry);
+        pte_t *pte= getpte(victim);
+        *pte&=~PTE_V;
+        setdiskentry(pte,entry);
+        r=(struct run*)F2PA(victim);
+    }
+    release(&kmem.lock);
+    memset((char *) r, 5, PGSIZE); // fill with junk
+    return (void *) r;
 }

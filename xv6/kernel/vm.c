@@ -16,56 +16,9 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
-//PHYSICAL MEMORY=16MB, PAGE SIZE=4KB => PHYSICAL MEMORY=4K PAGES
-uint64 refhistory[NUM_PAGES];
-struct frame {
-    enum {
-        EMPTY, IDLE, KERNEL, USER
-    } state;
-    pte_t *pte;
-};
-struct frame frames[NUM_PAGES];
-
-int
-getvictim() {
-    int victim = -1;
-    uint64 history = ~(0UL);
-    for (int i = 0; i < NUM_PAGES; i++) {
-        if (frames[i].state==IDLE)
-            return i;
-        if (frames[i].state == USER) {
-            if (refhistory[i] < history) {
-                history = refhistory[i];
-                victim = i;
-            }
-        }
-    }
-    return victim;
-}
-
-void
-shiftrefbits() {
-    for (int i = 0; i < NUM_PAGES; i++) {
-        if (frames[i].state == USER) {
-            pte_t *pte = frames[i].pte;
-            refhistory[i] = (refhistory[i] >> 1) | ((*pte & PTE_A) << 57);
-            *pte &= ~PTE_A;
-        }
-    }
-}
-
-const uint64 ENTRYMASK=~(~0UL<<44)<<10;
-
-void
-setdiskentry(pte_t *pte,uint32 entry){
-    *pte&=~ENTRYMASK;
-    *pte|=(entry<<10)|PTE_DISK;
-}
-
-
 uint32
 getdiskentry(pte_t *pte){
-    if((*pte & PTE_DISK)==0)
+    if((*pte & PTE_DISK)!=PTE_DISK)
         panic("getdiskentry: page is not currently stored on disk");
     uint32 entry=(uint32)((*pte&ENTRYMASK)>>10);
     return entry;
@@ -119,10 +72,7 @@ kvminithart() {
     sfence_vma();
 
     w_satp(MAKE_SATP(kernel_pagetable));
-    for (int i = 0; i < NUM_PAGES; i++) {
-        frames[i].state = EMPTY;
-        refhistory[i] = 0;
-    }
+
     // flush stale entries from the TLB.
     sfence_vma();
 }
@@ -152,21 +102,11 @@ walk(pagetable_t pagetable, uint64 va, int alloc) {
                 return 0;
             }
             pagetable = (pagetable_t) kalloc();
-            if (pagetable == 0) {
-                int victim=getvictim();
-                if(victim==-1) panic("uvmcreate: no user page to swapout");
-                uint32 entry=acquireentry();
-                pte_t *pte=frames[victim].pte;
-                void* victimPT=(void*)PTE2PA(*(frames[victim].pte));
-                swapout(victimPT,entry);
-                *pte&=~PTE_V;
-                setdiskentry(pte,entry);
-                pagetable=(pagetable_t)victimPT;
-            }
             if(*pte & PTE_DISK){
                 uint32 entry= getdiskentry(pte);
                 swapin((void*)pagetable,entry);
                 releaseentry(entry);
+                *pte&=~PTE_DISK;
             }
             *pte = PA2PTE(pagetable) | PTE_V;
         }
@@ -188,8 +128,8 @@ walkaddr(pagetable_t pagetable, uint64 va) {
     }
 
     pte = walk(pagetable, va, 0);
-    if (pte == 0)
-        return 0;
+    /*if (pte == 0)
+        return 0;*/
     if ((*pte & PTE_V) == 0)
         return 0;
     if ((*pte & PTE_U) == 0)
@@ -223,7 +163,6 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm) {
     last = PGROUNDDOWN(va + size - 1);
     for (;;) {
         if ((pte = walk(pagetable, a, 1)) == 0) {
-            //TODO: nadji victim stranicu, izbaci je na disk i dodeli njen blok novoj stranici
             return -1;
         }
 
@@ -257,7 +196,6 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free) {
         if (PTE_FLAGS(*pte) == PTE_V)
             panic("uvmunmap: not a leaf");
         uint64 pa= PTE2PA(*pte);
-        frames[pa>>12].state=(do_free)?EMPTY:IDLE;
         if (do_free)
             kfree((void *) pa);
         *pte = 0;
@@ -270,17 +208,7 @@ pagetable_t
 uvmcreate() {
     pagetable_t pagetable;
     pagetable = (pagetable_t) kalloc();
-    if (pagetable == 0) {
-        int victim=getvictim();
-        if(victim==-1) panic("uvmcreate: no user page to swapout");
-        uint32 entry=acquireentry();
-        pte_t *pte=frames[victim].pte;
-        void* victimPT=(void*)PTE2PA(*(frames[victim].pte));
-        swapout(victimPT,entry);
-        *pte&=~PTE_V;
-        setdiskentry(pte,entry);
-        pagetable=(pagetable_t)victimPT;
-    }
+    setframestate(PA2F(pagetable),'u');
     memset(pagetable, 0, PGSIZE);
     return pagetable;
 }
@@ -295,6 +223,7 @@ uvmfirst(pagetable_t pagetable, uchar *src, uint sz) {
     if (sz >= PGSIZE)
         panic("uvmfirst: more than a page");
     mem = kalloc();
+    setframestate(PA2F(mem),'u');
     memset(mem, 0, PGSIZE);
     mappages(pagetable, 0, PGSIZE, (uint64) mem, PTE_W | PTE_R | PTE_X | PTE_U);
     memmove(mem, src, sz);
@@ -388,8 +317,14 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
     for (i = 0; i < sz; i += PGSIZE) {
         if ((pte = walk(old, i, 0)) == 0)
             panic("uvmcopy: pte should exist");
-        if ((*pte & PTE_V) == 0)
-            panic("uvmcopy: page not present");
+        if ((*pte & PTE_V) == 0) {
+            if((*pte & PTE_DISK)!=PTE_DISK)
+                panic("uvmcopy: parent page not present in memory nor disk");
+            uint32 entry= getdiskentry(pte);
+            swapin(old,entry);
+            *pte&=~PTE_DISK;
+            releaseentry(entry);
+        }
         pa = PTE2PA(*pte);
         flags = PTE_FLAGS(*pte);
         if ((mem = kalloc()) == 0)

@@ -20,15 +20,6 @@ void releaseentry(uint32 entry);
 void swapout(void* addr,uint32 entry);
 void swapin(void* addr,uint32 entry);
 
-//frames.c
-#define ENTRYMASK (~(~0UL<<44)<<10)
-void framesinit(void);
-void shiftrefbits(void);
-void setdiskentry(pte_t *pte,uint32 entry);
-int getvictim(void);
-pte_t* getpte(int num);
-void setframestate(int num,char s);
-
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
@@ -80,6 +71,14 @@ void            ramdiskintr(void);
 void            ramdiskrw(struct buf*);
 
 // kalloc.c
+#define         ENTRYMASK (~(~0UL<<44)<<10)
+void            shiftrefbits(void);
+void            setdiskentry(pte_t *pte,uint32 entry);
+int             getvictim(void);
+pte_t*          getpte(int num);
+void            setframestate(int num,char s);
+void            setframepte(int num,pte_t *pte);
+
 void*           F2PA(int frame);
 int             PA2F(void* pa);
 void*           kalloc(void);

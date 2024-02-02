@@ -45,12 +45,14 @@ void releaseentry(uint32 entry){
 }
 
 void swapout(void* addr,uint32 entry){
+    printf("{SWAPOUT}\n");
     for(int i=0;i<4;i++){
         write_block(entry*4+i,(uchar*)((uint64)addr+i*DISKBLOCK),0);
     }
 }
 
 void swapin(void* addr,uint32 entry){
+    printf("{SWAPIN}\n");
     for(int i=0;i<4;i++){
         read_block(entry*4+i,(uchar*)((uint64)addr+i*DISKBLOCK),0);
     }

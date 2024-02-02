@@ -26,6 +26,23 @@ static struct {
 static char digits[] = "0123456789abcdef";
 
 static void
+printu64(uint64 xx, int base)
+{
+    char buf[32];
+    int i;
+    uint64 x=xx;
+
+    i = 0;
+    do {
+        buf[i++] = digits[x % base];
+    } while((x /= base) != 0);
+    if(base==16) buf[i++]='x';
+    buf[i++]='u';
+    while(--i >= 0)
+        consputc(buf[i]);
+}
+
+static void
 printint(int xx, int base, int sign)
 {
   char buf[16];
@@ -84,6 +101,12 @@ printf(char *fmt, ...)
     if(c == 0)
       break;
     switch(c){
+    case 'u':
+        printu64(va_arg(ap, uint64), 10);
+        break;
+        case 'U':
+            printu64(va_arg(ap, uint64), 16);
+            break;
     case 'd':
       printint(va_arg(ap, int), 10, 1);
       break;

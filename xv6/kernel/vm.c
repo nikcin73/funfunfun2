@@ -16,6 +16,17 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+void printtablecontent(pagetable_t pgtbl){
+    printf("START OF PAGE TABLE %U:\n",pgtbl);
+    for(int i=0;i<4096;i++){
+        pte_t *pte= &pgtbl[i];
+        if(*pte){
+            printf("TABLE ENTRY %d: %U\n",i,*pte);
+        }
+    }
+    printf("END OF PAGE TABLE %U:\n",pgtbl);
+}
+
 uint32
 getdiskentry(pte_t *pte){
     if((*pte & PTE_DISK)!=PTE_DISK)
@@ -28,10 +39,10 @@ getdiskentry(pte_t *pte){
 pagetable_t
 kvmmake(void) {
     pagetable_t kpgtbl;
-
+    printf("trampoline=%U,TRAMPOLINE=%U\n",trampoline,TRAMPOLINE);
     kpgtbl = (pagetable_t) kalloc();
+    printf("kpgtbl=%U\n",kpgtbl);
     memset(kpgtbl, 0, PGSIZE);
-
     // uart registers
     kvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
 
@@ -51,7 +62,6 @@ kvmmake(void) {
     // map the trampoline for trap entry/exit to
     // the highest virtual address in the kernel.
     kvmmap(kpgtbl, TRAMPOLINE, (uint64) trampoline, PGSIZE, PTE_R | PTE_X);
-
     // allocate and map a kernel stack for each process.
     proc_mapstacks(kpgtbl);
 
@@ -102,11 +112,12 @@ walk(pagetable_t pagetable, uint64 va, int alloc) {
                 return 0;
             }
             pagetable = (pagetable_t) kalloc();
+            setframepte(PA2F(pagetable),pte);
             if(*pte & PTE_DISK){
+                printf("must swap in\n");
                 uint32 entry= getdiskentry(pte);
                 swapin((void*)pagetable,entry);
                 releaseentry(entry);
-                *pte&=~PTE_DISK;
             }
             *pte = PA2PTE(pagetable) | PTE_V;
         }
@@ -128,8 +139,8 @@ walkaddr(pagetable_t pagetable, uint64 va) {
     }
 
     pte = walk(pagetable, va, 0);
-    /*if (pte == 0)
-        return 0;*/
+    if (pte == 0)
+        return 0;
     if ((*pte & PTE_V) == 0)
         return 0;
     if ((*pte & PTE_U) == 0)
@@ -165,10 +176,13 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm) {
         if ((pte = walk(pagetable, a, 1)) == 0) {
             return -1;
         }
-
-        if (*pte & PTE_V)
+        if (*pte & PTE_V){
             panic("mappages: remap");
+        }
         *pte = PA2PTE(pa) | perm | PTE_V;
+        if(*pte & PTE_U)
+            setframestate(PA2F((void*)pa),'u');
+        //setframepte(PA2F((void*)(pa>>12<<12)),pte);
         if (a == last)
             break;
         a += PGSIZE;
@@ -196,6 +210,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free) {
         if (PTE_FLAGS(*pte) == PTE_V)
             panic("uvmunmap: not a leaf");
         uint64 pa= PTE2PA(*pte);
+        setframestate(PA2F((void*)pa),'i');
         if (do_free)
             kfree((void *) pa);
         *pte = 0;
@@ -224,6 +239,7 @@ uvmfirst(pagetable_t pagetable, uchar *src, uint sz) {
         panic("uvmfirst: more than a page");
     mem = kalloc();
     setframestate(PA2F(mem),'u');
+    setframepte(PA2F(mem),(void*)0x777UL);
     memset(mem, 0, PGSIZE);
     mappages(pagetable, 0, PGSIZE, (uint64) mem, PTE_W | PTE_R | PTE_X | PTE_U);
     memmove(mem, src, sz);
@@ -351,6 +367,7 @@ uvmclear(pagetable_t pagetable, uint64 va) {
     pte = walk(pagetable, va, 0);
     if (pte == 0)
         panic("uvmclear");
+    setframestate(PA2F((void*)(PTE2PA(*pte))),'k');
     *pte &= ~PTE_U;
 }
 

@@ -160,8 +160,9 @@ kerneltrap()
   w_sstatus(sstatus);
 }
 
-int updatePeriod=10;
-int thrashingPeriod=100;
+const int coeff=10;
+const int updatePeriod=10;
+const int thrashingPeriod=coeff*updatePeriod;
 void
 clockintr()
 {
@@ -171,7 +172,22 @@ clockintr()
       shiftrefbits();
   }
   if(ticks%thrashingPeriod==0){
-      //TODO:thrashing
+      //TODO: Napravi detekciju i oporavak od thrashing-a
+      /*
+       * Za svaku stranicu se gleda A bit za odgovarajuci PTE
+       * I najvisih (coeff-1)bitova u history odgovarajuceg okvira.
+       *
+       * Ako je broj dobijen konkatenacijom tih bitova razlicit od nule,
+       * ta stranica pripada radnom skupu procesa.
+       *
+       * Kriticna granica je 90% broja svih okvira koji su po inicijalizaciji kernela
+       * bili markirani kao slobodni.
+       *
+       * Ako zbir svih radnih skupova procesa prevazilazi kriticnu granicu,
+       * neki proces se suspenduje.
+       *
+       *
+       */
   }
   wakeup(&ticks);
   release(&tickslock);

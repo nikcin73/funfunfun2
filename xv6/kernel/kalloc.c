@@ -23,10 +23,10 @@ struct {
     struct run *freelist;
 } kmem;
 
+typedef enum {EMPTY, IDLE, KERNEL, USER} framestate;
+
 struct frame {
-    enum {
-        EMPTY, IDLE, KERNEL, USER
-    } state;
+    framestate state;
     pte_t *pte;
     uint64 history;
 };
@@ -35,8 +35,8 @@ struct frame frames[NUM_PAGES];
 
 void
 framesinit() {
-    for (int i = 0; i < NUM_PAGES ;
-    i++) {
+    for (int i = 0; i < NUM_PAGES;
+         i++) {
         frames[i].state = KERNEL;
         frames[i].history = 0;
         frames[i].pte = 0;
@@ -56,8 +56,8 @@ PA2F(void *pa) {
 
 void
 shiftrefbits() {
-    for (int i = 0; i < NUM_PAGES ; i++) {
-        if (frames[i].state == USER || frames[i].state==KERNEL) {
+    for (int i = 0; i < NUM_PAGES; i++) {
+        if (frames[i].state == USER || frames[i].state == KERNEL) {
             pte_t *pte = frames[i].pte;
             if (!pte) continue;
             frames[i].history = (frames[i].history >> 1) | ((*pte & PTE_A) << 57);
@@ -67,30 +67,32 @@ shiftrefbits() {
 }
 
 
-int victimstart=0;
+int victimstart = 0;
+
 int
 getvictim() {
-    int i=victimstart;
+    int i = victimstart;
     int victim = -1;
     uint64 history = ~(0UL);
-    do{
-        if (frames[i].state == IDLE){
-            printf("frame %d is idle\n",i);
-            victim=i;
+    do {
+        if (frames[i].state == IDLE) {
+            //printf("frame %d is idle\n", i);
+            victim = i;
             break;
         }
         if (frames[i].state == USER) {
             if (victim == -1) victim = i;
             if (frames[i].history < history) {
-                history = frames[i].history ;
+                history = frames[i].history;
                 victim = i;
             }
         }
-        i=(i+1)%NUM_PAGES;
-    }while(i!=victimstart);
-    if(victim>-1 && frames[victim].state!=IDLE)
-        printf("frame %d has lowest history:%U\n",victim,frames[i].history);
-    if(victim==victimstart) victimstart=(victimstart+1)%NUM_PAGES;
+        i = (i + 1) % NUM_PAGES;
+    } while (i != victimstart);
+    /*if (victim > -1 && frames[victim].state != IDLE) {
+        printf("frame %d has lowest history:%U\n", victim, frames[i].history);
+    }*/
+    if (victim == victimstart) victimstart = (victimstart + 1) % NUM_PAGES;
     return victim;
 }
 
@@ -130,14 +132,13 @@ kinit() {
     framesinit();
     initlock(&kmem.lock, "kmem");
     freerange(end, (void *) PHYSTOP);
-    printf("kinit: end=%U\n",end);
 }
 
 void
 freerange(void *pa_start, void *pa_end) {
     char *p;
     p = (char *) PGROUNDUP((uint64) pa_start);
-    for (; p + PGSIZE <= (char *) pa_end; p += PGSIZE){
+    for (; p + PGSIZE <= (char *) pa_end; p += PGSIZE) {
         kfree(p);
     }
 }
@@ -163,6 +164,7 @@ kfree(void *pa) {
     //printf("FREEING FRAME %d (&%U)\n",num,r);
     frames[num].history = 0;
     frames[num].state = EMPTY;
+    frames[num].pte=0;
     r->next = kmem.freelist;
     kmem.freelist = r;
     release(&kmem.lock);
@@ -181,27 +183,30 @@ kalloc(void) {
     r = kmem.freelist;
     if (r) {
         kmem.freelist = r->next;
-        int num= PA2F(r);
-        frames[num].history=~(0UL);
-        frames[num].state=KERNEL;
+        int num = PA2F(r);
+        frames[num].history = ~(0UL);
+        frames[num].state = KERNEL;
+        frames[num].pte=0;
     } else {
         int victim = getvictim();
         if (victim == -1) panic("kalloc: no idle/user pages in memory");
-        uint32 entry = acquireentry();
-        if (entry == -1) panic("kalloc: no free disk entries");
-        pte_t *oldpte = frames[victim].pte;
+        framestate oldstate = frames[victim].state;
         frames[victim].state = KERNEL;
-        release(&kmem.lock);
-        printf("&pte=%U swapping &%U (frame %d) to entry %u\n", oldpte, F2PA(victim), victim, entry);
-        swapout((void *) F2PA(victim), entry);
-        acquire(&kmem.lock);
-        if (oldpte) {
+        frames[victim].history = ~(0UL);
+        pte_t *oldpte = frames[victim].pte;
+        frames[victim].pte=0;
+        if (oldstate == USER && oldpte) {
+            release(&kmem.lock);
+            uint32 entry = acquireentry();
+            if (entry == -1) panic("kalloc: no free disk entries");
+            printf("&pte=%U swapping &%U (frame %d) to entry %u\n", oldpte, F2PA(victim), victim, entry);
+            swapout((void *) F2PA(victim), entry);
             *oldpte &= ~PTE_V;
             *oldpte &= ~ENTRYMASK;
             *oldpte |= (entry << 10) | PTE_DISK;
+            acquire(&kmem.lock);
         }
         r = (struct run *) F2PA(victim);
-        frames[victim].history=~(0UL);
     }
     release(&kmem.lock);
     memset((char *) r, 0, PGSIZE); // fill with junk

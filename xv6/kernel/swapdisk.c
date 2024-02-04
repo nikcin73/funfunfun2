@@ -14,25 +14,21 @@ const int DISKBLOCK=1L<<10;
 struct {
     struct spinlock lock;
     char valid[NUM_ENTRY];
-    int start;
 } swapdisk;
 
 void swapdiskinit(){
     initlock(&swapdisk.lock,"swapdisk");
     for(int i=0;i<NUM_ENTRY;i++) swapdisk.valid[i]=0;
-    swapdisk.start=0;
 }
 
 uint32 acquireentry(){
     acquire(&swapdisk.lock);
-    uint32 entry=swapdisk.start;
-    do{
+    uint32 entry;
+    for(entry=0;entry<NUM_ENTRY;entry++){
         if(!swapdisk.valid[entry]) break;
-        entry=(entry+1)%NUM_ENTRY;
-    }while(entry!=swapdisk.start);
-    if(entry==swapdisk.start && swapdisk.valid[entry]) panic("swapdisk: no more free entries");
+    }
+    if(entry==NUM_ENTRY) panic("swapdisk: no more free entries");
     swapdisk.valid[entry]=1;
-    swapdisk.start=(entry+1)%NUM_ENTRY;
     release(&swapdisk.lock);
     return entry;
 }
@@ -45,14 +41,12 @@ void releaseentry(uint32 entry){
 }
 
 void swapout(void* addr,uint32 entry){
-    printf("{SWAPOUT}\n");
     for(int i=0;i<4;i++){
         write_block(entry*4+i,(uchar*)((uint64)addr+i*DISKBLOCK),0);
     }
 }
 
 void swapin(void* addr,uint32 entry){
-    printf("{SWAPIN}\n");
     for(int i=0;i<4;i++){
         read_block(entry*4+i,(uchar*)((uint64)addr+i*DISKBLOCK),0);
     }

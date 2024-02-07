@@ -978,6 +978,7 @@ forkfork(char *s)
         if(pid1 == 0){
           exit(0);
         }
+        //printf("done fork (%d,%d)\n",i,j);
         wait(0);
       }
       exit(0);

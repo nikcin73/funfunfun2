@@ -16,20 +16,9 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
-void printtablecontent(pagetable_t pgtbl) {
-    printf("START OF PAGE TABLE %U:\n", pgtbl);
-    for (int i = 0; i < 4096; i++) {
-        pte_t *pte = &pgtbl[i];
-        if (*pte) {
-            printf("TABLE ENTRY %d: %U\n", i, *pte);
-        }
-    }
-    printf("END OF PAGE TABLE %U:\n", pgtbl);
-}
-
 uint32
 getdiskentry(pte_t *pte) {
-    if ((*pte & PTE_DISK) != PTE_DISK)
+    if (!(*pte & PTE_DISK))
         panic("getdiskentry: page is not currently stored on disk");
     uint32 entry = (uint32) ((*pte & ENTRYMASK) >> 10);
     return entry;
@@ -104,28 +93,14 @@ walk(pagetable_t pagetable, uint64 va, int alloc) {
         pte_t *pte = &pagetable[PX(level, va)];
         if (*pte & PTE_V) {
             pagetable = (pagetable_t) PTE2PA(*pte);
-            if(PA2F((void*)pagetable)==2000 && getpte(PA2F(pagetable))!=pte)
-                printf("2000!!! frame's &PTE should be %U, instead it's %U\n",pte,getpte(PA2F(pagetable)));
-            setframepte(PA2F(pagetable),pte);
         } else {
-            if (!alloc) {
+            if (!alloc || !(pagetable = (pagetable_t) kalloc())) {
                 return 0;
             }
-            pagetable = (pagetable_t) kalloc();
-            if(PA2F((void*)pagetable)==2000){
-                printf("2000!!! frame's new &PTE is %U\n",pte);
-            }
-            setframepte(PA2F(pagetable), pte);
-            if (*pte & PTE_DISK) {
-                uint32 entry = getdiskentry(pte);
-                swapin((void *) pagetable, entry);
-                releaseentry(entry);
-            }
+            memset(pagetable, 0, PGSIZE);
             *pte = PA2PTE(pagetable) | PTE_V;
         }
-        *pte |= PTE_A;
     }
-    __sync_synchronize();
     return &pagetable[PX(0, va)];
 }
 
@@ -144,10 +119,15 @@ walkaddr(pagetable_t pagetable, uint64 va) {
     pte = walk(pagetable, va, 0);
     if (pte == 0)
         return 0;
-    if ((*pte & PTE_V) == 0)
-        return 0;
+    if ((*pte & PTE_V) == 0) {
+        if (*pte & PTE_DISK)
+            swapin((uint64) pagetable, va);
+        else
+            return 0;
+    }
     if ((*pte & PTE_U) == 0)
         return 0;
+    *pte |= PTE_A;
     pa = PTE2PA(*pte);
     return pa;
 }
@@ -167,7 +147,6 @@ kvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm) {
 // allocate a needed page-table page.
 int
 mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm) {
-    //TODO: Popravi mappages
     uint64 a, last;
     pte_t *pte;
 
@@ -181,12 +160,16 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm) {
             return -1;
         }
         if (*pte & PTE_V) {
-            kfree((void*)PTE2PA(*pte));
+            panic("mappages: remap");
         }
-        *pte = PA2PTE(pa) | perm | PTE_V;
-        //if(pa>=KERNBASE && pa<PHYSTOP) setframepte(PA2F((void*)pa),pte);
-        if (pa>=KERNBASE && pa<PHYSTOP && (perm & PTE_U))
-            setframestate(PA2F((void*) PTE2PA(*pte)), 'u');
+        *pte = PA2PTE(pa) | perm | PTE_A | PTE_V;
+        if (pa >= (uint64) F2PA(0) && pa < (uint64) F2PA(NFRAME) && (perm & PTE_U)) {
+            int num = PA2F((void *) PTE2PA(*pte));
+            if (num < 0 || num >= NFRAME) printf("\nnum=%d\n", num);
+            setframetable(num, (void *) pagetable);
+            setframepte(num, pte);
+            setframeswap(num, 1);
+        }
         if (a == last)
             break;
         a += PGSIZE;
@@ -200,14 +183,6 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm) {
 // Optionally free the physical memory.
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free) {
-    //TODO: Pitanje za uvmunmap
-    /*
-     * Ako stranica nikada nije ucitana u operativnu memoriju
-     * ili je izbacena na disk - da li treba prekidati program?
-     *
-     * Zar nije logicno samo da se invalidira ulaz na disku gde
-     * je potencijalno sačuvana stranica
-     */
     uint64 a;
     pte_t *pte;
 
@@ -215,23 +190,22 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free) {
         panic("uvmunmap: not aligned");
     for (a = va; a < va + npages * PGSIZE; a += PGSIZE) {
         if ((pte = walk(pagetable, a, 0)) == 0)
-            continue;
-        if ((PTE_FLAGS(*pte) & ~PTE_V) == 0)
-            continue;
-            //panic("uvmunmap: not a leaf");
-        if ((*pte & PTE_V) == 0) {
-            if(*pte & PTE_DISK){
-                uint32 entry= getdiskentry(pte);
-                releaseentry(entry);
-            }
-            //panic("uvmunmap: not mapped");
-        }
-        else{
+            panic("uvmunmap: walk");
+        if ((*pte & PTE_V) && (*pte & PTE_DISK))
+            panic("uvmunmap: page is \"present\" both memory and disk");
+        if (!(*pte & PTE_V) && !(*pte & PTE_DISK))
+            panic("uvmunmap: page is not present in memory nor in disk");
+        if (PTE_FLAGS(*pte) == PTE_V)
+            panic("uvmunmap: not a leaf");
+        if (*pte & PTE_V) {
             uint64 pa = PTE2PA(*pte);
-            setframestate(PA2F((void *) pa), 'i');
-            setframepte(PA2F((void*)pa),0);
             if (do_free)
                 kfree((void *) pa);
+            else
+                freeframe(PA2F((void *) pa), 2);
+        } else {
+            int diskentry = getdiskentry(pte);
+            releaseentry(diskentry);
         }
         *pte = 0;
     }
@@ -243,6 +217,9 @@ pagetable_t
 uvmcreate() {
     pagetable_t pagetable;
     pagetable = (pagetable_t) kalloc();
+    if(pagetable == 0)
+        return 0;
+    memset(pagetable, 0, PGSIZE);
     return pagetable;
 }
 
@@ -255,6 +232,7 @@ uvmfirst(pagetable_t pagetable, uchar *src, uint sz) {
     if (sz >= PGSIZE)
         panic("uvmfirst: more than a page");
     mem = kalloc();
+    memset(mem, 0, PGSIZE);
     mappages(pagetable, 0, PGSIZE, (uint64) mem, PTE_W | PTE_R | PTE_X | PTE_U);
     memmove(mem, src, sz);
 }
@@ -347,18 +325,10 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
     for (i = 0; i < sz; i += PGSIZE) {
         if ((pte = walk(old, i, 0)) == 0)
             panic("uvmcopy: pte should exist");
-        if ((*pte & PTE_V) == 0) {
-            if ((*pte & PTE_DISK) == 0)
-                panic("uvmcopy: cannot find page in memory nor in swap disk");
-            uint32 entry = getdiskentry(pte);
-            pa = (uint64) kalloc();
-            swapin((void *) pa, entry);
-            releaseentry(entry);
-            setframepte(PA2F((void*)pa),pte);
-            *pte &= ~(ENTRYMASK | PTE_DISK);
-            *pte |= PA2PTE(pa) | PTE_V;
-        }
-        *pte |= PTE_A;
+        if (*pte & PTE_DISK)
+            swapin((uint64) old, i);
+        if ((*pte & PTE_V) == 0)
+            panic("uvmcopy: page is not present in memory");
         pa = PTE2PA(*pte);
         flags = PTE_FLAGS(*pte);
         if ((mem = kalloc()) == 0)
@@ -381,11 +351,10 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
 void
 uvmclear(pagetable_t pagetable, uint64 va) {
     pte_t *pte;
-
-    pte = walk(pagetable, va, 0);
-    if (pte == 0)
+    if ((pte = walk(pagetable, va, 0)) == 0)
         panic("uvmclear");
-    setframestate(PA2F((void *) (PTE2PA(*pte))), 'k');
+    int num = PA2F((void *) PTE2PA(*pte));
+    setframeswap(num, 0);
     *pte &= ~PTE_U;
 }
 

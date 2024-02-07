@@ -30,6 +30,7 @@ main()
     virtio_disk_init(VIRTIO0_ID, "program_disk"); // emulated hard disk 0, with programs
     virtio_disk_init(VIRTIO1_ID, "swap_disk"); // emulated hard disk 1, with swap
     swapdiskinit();
+    initthrashing();
     userinit();      // first user process
     __sync_synchronize();
     started = 1;

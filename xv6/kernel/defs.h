@@ -13,12 +13,18 @@ struct sleeplock;
 struct stat;
 struct superblock;
 
+//frames.c
+void            freeframe(int num,char swap);
+void            shifthistory(void);
+void*           swapout(void);
+int             swapin(uint64 pagetable,uint64 va);
+
 //swapdisk.c
 void swapdiskinit(void);
-uint32 acquireentry(void);
-void releaseentry(uint32 entry);
-void swapout(void* addr,uint32 entry);
-void swapin(void* addr,uint32 entry);
+int acquireentry(void);
+void releaseentry(int entry);
+void swapdiskwrite(void* addr,int entry);
+void swapdiskread(void* addr,int entry);
 
 // bio.c
 void            binit(void);
@@ -72,13 +78,14 @@ void            ramdiskrw(struct buf*);
 
 // kalloc.c
 #define         ENTRYMASK (~(~0UL<<44)<<10)
-void            shiftrefbits(void);
 void            setdiskentry(pte_t *pte,uint32 entry);
 int             getvictim(void);
-pte_t*          getpte(int num);
-void            setframestate(int num,char s);
+void            setframeswap(int num,char s);
+void            setframetable(int num,void* pagetable);
 void            setframepte(int num,pte_t *pte);
-
+char            getframeswap(int num);
+void*           getframetable(int num);
+pte_t*          getframepte(int num);
 void*           F2PA(int frame);
 int             PA2F(void* pa);
 void*           kalloc(void);
@@ -128,6 +135,9 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+void            initthrashing(void);
+void            checkthrashing(void);
+int             getpid(void);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -178,6 +188,7 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
+uint32          getdiskentry(pte_t *pte);
 void            framesinit(void);
 void            shiftrefbits(void);
 void            kvminit(void);

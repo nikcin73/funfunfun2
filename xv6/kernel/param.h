@@ -1,5 +1,6 @@
 #define NPROC        64  // maximum number of processes
 #define NCPU          1  // maximum number of CPUs
+#define NFRAME       4096 // number of frames in physical memory
 #define NOFILE       16  // open files per process
 #define NFILE       100  // open files per system
 #define NINODE       50  // maximum number of active i-nodes

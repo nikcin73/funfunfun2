@@ -345,6 +345,7 @@ typedef uint64 *pagetable_t; // 512 PTEs
 #define PTE_U (1L << 4) // user can access
 #define PTE_A (1L << 6) // access bit
 #define PTE_DISK (1L<<9) // page is swapped out to disk
+#define PTE_GUARD (1L <<8) // page is used as guard page
 
 // shift a physical address to the right place for a PTE.
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)

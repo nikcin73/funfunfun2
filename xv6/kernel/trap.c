@@ -49,8 +49,8 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
-  if(r_scause() == 8){
+  int scause=r_scause();
+  if(scause == 8){
     // system call
 
     if(killed(p))
@@ -67,7 +67,17 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(scause==12 || scause==13 || scause==15){
+      printf("\nPAGE FAULT START\n");
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("p->pagetable=%p\n",p->pagetable);
+      printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
+      uint64 va=(uint64)r_stval();
+      if(!swapin((uint64)(p->pagetable),va))
+          setkilled(p);
+      printf("PAGE FAULT END\n");
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);
@@ -169,7 +179,7 @@ clockintr()
   acquire(&tickslock);
   ticks++;
   if(ticks%updatePeriod==0){
-      shiftrefbits();
+    shifthistory();
   }
   if(ticks%thrashingPeriod==0){
       //TODO: Napravi detekciju i oporavak od thrashing-a

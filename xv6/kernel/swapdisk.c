@@ -21,32 +21,35 @@ void swapdiskinit(){
     for(int i=0;i<NUM_ENTRY;i++) swapdisk.valid[i]=0;
 }
 
-uint32 acquireentry(){
+int acquireentry(){
     acquire(&swapdisk.lock);
-    uint32 entry;
+    int entry;
     for(entry=0;entry<NUM_ENTRY;entry++){
         if(!swapdisk.valid[entry]) break;
     }
-    if(entry==NUM_ENTRY) panic("swapdisk: no more free entries");
+    if(entry==NUM_ENTRY){
+        release(&swapdisk.lock);
+        return -1;
+    }
     swapdisk.valid[entry]=1;
     release(&swapdisk.lock);
     return entry;
 }
 
-void releaseentry(uint32 entry){
+void releaseentry(int entry){
     acquire(&swapdisk.lock);
     if(!swapdisk.valid[entry]) panic("swapdisk: tried to release free entry");
     swapdisk.valid[entry]=0;
     release(&swapdisk.lock);
 }
 
-void swapout(void* addr,uint32 entry){
+void swapdiskwrite(void* addr,int entry){
     for(int i=0;i<4;i++){
         write_block(entry*4+i,(uchar*)((uint64)addr+i*DISKBLOCK),0);
     }
 }
 
-void swapin(void* addr,uint32 entry){
+void swapdiskread(void* addr,int entry){
     for(int i=0;i<4;i++){
         read_block(entry*4+i,(uchar*)((uint64)addr+i*DISKBLOCK),0);
     }

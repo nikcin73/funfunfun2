@@ -685,3 +685,34 @@ procdump(void)
     printf("\n");
   }
 }
+
+
+int thrashingthreshold=-1;
+int workset[NPROC];
+void initthrashing(){
+    if(thrashingthreshold!=-1) panic("inittrashing: multiple function call");
+    thrashingthreshold=0;
+    for(int i=0;i<NFRAME;i++){
+        if(getframeswap(i) ) thrashingthreshold++;
+    }
+}
+
+void checkthrashing(){
+    for(int i=0;i<NPROC;i++){
+        workset[i]=0;
+    }
+    for(int i=0;i<NFRAME;i++){
+        pagetable_t pagetable= getframepte(i);
+        if(!getframeswap(i) || !pagetable) continue;
+        for(int j=0;j<NPROC;j++){
+            if((proc[j].state==RUNNABLE || proc[j].state==RUNNING) && proc[j].pagetable==pagetable){
+                workset[j]++;
+                break;
+            }
+        }
+    }
+    printf("THRASHING TABLE:\n");
+    for(int i=0;i<NPROC;i++){
+        if(workset[i]>0) printf("\tPROC %d: pid=%d, workset=%d\n",i,proc[i].pid,workset[i]);
+    }
+}

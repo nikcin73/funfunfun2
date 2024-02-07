@@ -116,6 +116,11 @@ printf(char *fmt, ...)
     case 'p':
       printptr(va_arg(ap, uint64));
       break;
+    case 'c':
+        if((s = va_arg(ap, char*)) == 0)
+            s = "#";
+        consputc(*s);
+        break;
     case 's':
       if((s = va_arg(ap, char*)) == 0)
         s = "(null)";
